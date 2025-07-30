@@ -1,48 +1,84 @@
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "19.15.1"
+  version = "21.0.5"
 
-  cluster_name                   = local.name
-  cluster_endpoint_public_access = true
+  name               = "my-eks-cluster"
+  kubernetes_version = "1.30"
 
-  cluster_addons = {
-    coredns = {
-      most_recent = true
-    }
-    kube-proxy = {
-      most_recent = true
-    }
-    vpc-cni = {
-      most_recent = true
-    }
-  }
+  enable_cluster_creator_admin_permissions = true
+  endpoint_public_access                   = true
 
-  vpc_id                   = module.vpc.vpc_id
-  subnet_ids               = module.vpc.private_subnets
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  # Optional: Specify control plane subnets if using separate ones
   # control_plane_subnet_ids = module.vpc.intra_subnets
 
-  # # EKS Managed Node Group(s)
-  # eks_managed_node_group_defaults = {
-  #   ami_type       = "AL2_x86_64"
-  #   instance_types = ["m5.large"]
-
-  #   attach_cluster_primary_security_group = true
-  # }
+  addons = {
+    coredns    = {}
+    kube-proxy = {}
+    vpc-cni = {
+      before_compute = true
+    }
+    # eks-pod-identity-agent = {
+    #   before_compute = true
+    # }
+  }
 
   eks_managed_node_groups = {
-    amc-cluster-wg = {
+    prefix-enabled-nodes = {
+      instance_types = ["t3.xlarge"]
+
+      desired_size = 2
       min_size     = 1
-      max_size     = 2
-      desired_size = 1
+      max_size     = 3
 
-      instance_types = ["t3.large"]
-      capacity_type  = "SPOT"
+      ami_type = "AL2_x86_64"
 
-      tags = {
-        ExtraTag = "helloworld"
+      launch_template = {
+        id      = aws_launch_template.prefix_delegation.id
+        version = "$Latest"
       }
     }
   }
 
-  tags = local.tags
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+
+# Launch template enabling prefix delegation
+resource "aws_launch_template" "prefix_delegation" {
+  name_prefix   = "eks-prefix-enabled-"
+  instance_type = "t3.medium"
+  image_id      = data.aws_ami.eks_ami.id
+
+  network_interfaces {
+    associate_public_ip_address = true
+    ipv4_prefix_count           = 1
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "eks-prefix-delegation-node"
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Get latest EKS-compatible Amazon Linux 2 AMI
+data "aws_ami" "eks_ami" {
+  owners      = ["602401143452"] # Amazon
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = ["amazon-eks-node-1.29-v*"]
+  }
 }
